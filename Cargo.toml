@@ -4,3 +4,16 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+radix_heap = "0.4.2"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+opt-level = 3
+panic = "abort"
+
+[profile.bench]
+lto = "fat"
+codegen-units = 1
+opt-level = 3
+panic = "abort"
