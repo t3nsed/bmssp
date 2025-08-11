@@ -1,5 +1,4 @@
-use std::cmp::Reverse;
-use std::collections::BinaryHeap;
+use radix_heap::RadixHeapMap;
 
 pub const INF: u64 = u64::MAX / 4;
 
@@ -67,34 +66,75 @@ impl Distances {
     }
 }
 
+/// Use Dial's bucket queue for small bound, else fall back to RadixHeap.
 pub fn bounded_multi_source_shortest_paths(graph: &Graph, sources: &[usize], bound: u64) -> Distances {
+    const BUCKET_BOUND_THRESHOLD: usize = 1_000_000;
     let n = graph.num_nodes();
     for &s in sources { debug_assert!(s < n); }
     let mut dist = vec![INF; n];
     let mut pred = vec![usize::MAX; n];
-    let mut heap: BinaryHeap<(Reverse<u64>, usize)> = BinaryHeap::new();
-    for &s in sources {
-        if dist[s] != 0 {
-            dist[s] = 0;
-            pred[s] = s;
-            heap.push((Reverse(0), s));
+
+    // Fast path: Use bucket queue if bound fits in usize and is smallish
+    if bound <= BUCKET_BOUND_THRESHOLD as u64 && bound <= usize::MAX as u64 {
+        let bound_usize = bound as usize;
+        let mut buckets: Vec<Vec<usize>> = vec![Vec::new(); bound_usize + 1];
+        for &s in sources {
+            if dist[s] != 0 {
+                dist[s] = 0;
+                pred[s] = s;
+                buckets[0].push(s);
+            }
         }
-    }
-    while let Some((Reverse(d_u), u)) = heap.pop() {
-        if d_u > bound { break; }
-        if d_u != dist[u] { continue; }
-        for &(v, w) in graph.neighbors(u) {
-            if w <= bound.saturating_sub(d_u) {
-                let nd = d_u + w;
-                if nd < dist[v] {
-                    dist[v] = nd;
-                    pred[v] = u;
-                    heap.push((Reverse(nd), v));
+        for cur_d in 0..=bound_usize {
+            while let Some(u) = buckets[cur_d].pop() {
+                if dist[u] != cur_d as u64 { continue; }
+                let max_w = bound_usize - cur_d;
+                for &(v, w) in graph.neighbors(u) {
+                    // w and d_u are both u64 and cur_d is usize, so w as usize is safe if w <= max_w
+                    if w <= max_w as u64 {
+                        let nd = cur_d as u64 + w;
+                        if nd < dist[v] {
+                            dist[v] = nd;
+                            pred[v] = u;
+                            if nd <= bound {
+                                // nd as usize <= bound_usize, guaranteed by loop
+                                buckets[nd as usize].push(v);
+                            }
+                        }
+                    }
                 }
             }
         }
+        Distances { distances: dist, predecessors: pred }
+    } else {
+        // Fallback: Use RadixHeapMap<u64, usize>
+        let mut heap: RadixHeapMap<u64, usize> = RadixHeapMap::with_capacity(sources.len());
+        for &s in sources {
+            if dist[s] != 0 {
+                dist[s] = 0;
+                pred[s] = s;
+                heap.push(0, s);
+            }
+        }
+        while let Some((d_u, u)) = heap.pop() {
+            if d_u > bound { break; }
+            if d_u != dist[u] { continue; }
+            let max_w = bound.saturating_sub(d_u);
+            for &(v, w) in graph.neighbors(u) {
+                if w <= max_w {
+                    let nd = d_u + w;
+                    if nd < dist[v] {
+                        dist[v] = nd;
+                        pred[v] = u;
+                        if nd <= bound {
+                            heap.push(nd, v);
+                        }
+                    }
+                }
+            }
+        }
+        Distances { distances: dist, predecessors: pred }
     }
-    Distances { distances: dist, predecessors: pred }
 }
 
 pub fn unbounded_multi_source_shortest_paths(graph: &Graph, sources: &[usize]) -> Distances {
@@ -102,22 +142,24 @@ pub fn unbounded_multi_source_shortest_paths(graph: &Graph, sources: &[usize]) -
     for &s in sources { debug_assert!(s < n); }
     let mut dist = vec![INF; n];
     let mut pred = vec![usize::MAX; n];
-    let mut heap: BinaryHeap<(Reverse<u64>, usize)> = BinaryHeap::new();
+    let mut heap: RadixHeapMap<u64, usize> = RadixHeapMap::with_capacity(sources.len());
     for &s in sources {
         if dist[s] != 0 {
             dist[s] = 0;
             pred[s] = s;
-            heap.push((Reverse(0), s));
+            heap.push(0, s);
         }
     }
-    while let Some((Reverse(d_u), u)) = heap.pop() {
+    while let Some((d_u, u)) = heap.pop() {
         if d_u != dist[u] { continue; }
+        // It's safe to use checked add because the saturating logic is only needed for bounded variant,
+        // but for clarity, use saturating_add for u64 overflow protection.
         for &(v, w) in graph.neighbors(u) {
             let nd = d_u.saturating_add(w);
             if nd < dist[v] {
                 dist[v] = nd;
                 pred[v] = u;
-                heap.push((Reverse(nd), v));
+                heap.push(nd, v);
             }
         }
     }
